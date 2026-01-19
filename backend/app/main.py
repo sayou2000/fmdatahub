@@ -3,66 +3,110 @@ from fastapi import FastAPI, HTTPException, Depends
 from sqlalchemy.orm import Session
 import httpx
 
-# Importiere unsere neuen Module
+# Importiere unsere Module
 from .database import engine, Base, get_db
 from .models import ImportedIssue
 
-# Erstelle die Tabellen in der Datenbank (falls sie noch nicht existieren)
+# DB Tabellen erstellen
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="CAFM Connector Hub")
 
+# --- 1. Der einfache Check (Root) ---
 @app.get("/")
 def read_root():
-    return {"Status": "Connector mit Datenbank verbunden!", "Version": "0.3.0"}
+    return {"Status": "Connector läuft!", "Version": "0.4.0 (Full Features)"}
 
-@app.post("/openspace/sync")
-async def sync_openspace_data(project_id: str = None, db: Session = Depends(get_db)):
-    """
-    Holt Daten von OpenSpace und speichert sie in der DB.
-    """
+# --- 2. Der Verbindungstest (Wieder da!) ---
+@app.get("/openspace/test-connection")
+async def test_openspace_connection():
     token = os.getenv("OPENSPACE_API_TOKEN")
     if not token:
-        raise HTTPException(status_code=500, detail="Kein OPENSPACE_API_TOKEN konfiguriert")
+        raise HTTPException(status_code=500, detail="Kein Token gesetzt")
 
-    # Header genau so, wie wir es getestet haben (api-key)
+    headers = {"api-key": token, "Accept": "application/json"}
+    
+    # Wir pingen einfach die User-Info oder Projekte an
+    url = "https://api.eu.openspace.ai/v2/projects" 
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            # Versuch mit api-key Header
+            response = await client.get(url, headers=headers, params={"page": 1, "limit": 1}, timeout=10.0)
+            
+            # Falls 401/403: Versuch mit Bearer (OpenSpace ist hier manchmal eigen)
+            if response.status_code in [401, 403]:
+                headers["Authorization"] = f"Bearer {token}"
+                del headers["api-key"]
+                response = await client.get(url, headers=headers, params={"page": 1, "limit": 1}, timeout=10.0)
+
+            return {
+                "http_status": response.status_code,
+                "data_preview": response.json() if response.status_code == 200 else response.text
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+# --- 3. Hilfs-Endpunkt: Zeig mir meine Projekt-IDs ---
+@app.get("/openspace/list-projects")
+async def list_projects():
+    """Nutze dies, um deine project_id zu finden!"""
+    token = os.getenv("OPENSPACE_API_TOKEN")
+    headers = {"api-key": token, "Accept": "application/json"}
+    url = "https://api.eu.openspace.ai/v2/projects" 
+    
+    async with httpx.AsyncClient() as client:
+        # Wir versuchen es robust mit beiden Auth-Methoden
+        response = await client.get(url, headers=headers, timeout=10.0)
+        if response.status_code in [401, 403]:
+            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+            response = await client.get(url, headers=headers, timeout=10.0)
+            
+        return response.json()
+
+# --- 4. Der Sync (Daten holen & Speichern) ---
+@app.post("/openspace/sync")
+async def sync_openspace_data(project_id: str, db: Session = Depends(get_db)):
+    """
+    project_id ist jetzt PFLICHT, damit wir nicht 0 Ergebnisse bekommen.
+    """
+    token = os.getenv("OPENSPACE_API_TOKEN")
+    
+    # Auth Header für External API (meist api-key)
     headers = {"api-key": token, "Accept": "application/json"}
     
     # URL für Field Notes
     url = "https://api.eu.openspace.ai/api/external/v1/reports/field-notes"
     
-    # Wir holen testweise 5 Einträge
-    params = {"page": 1, "limit": 5}
-    if project_id:
-        params["projectId"] = project_id
+    params = {
+        "page": 1, 
+        "limit": 5,
+        "projectId": project_id  # <--- HIER ist der Schlüssel zum Erfolg
+    }
 
     async with httpx.AsyncClient() as client:
         try:
             response = await client.get(url, headers=headers, params=params, timeout=15.0)
             
             if response.status_code != 200:
-                return {"error": "OpenSpace API Error", "details": response.text}
+                return {"error": "API Fehler", "code": response.status_code, "msg": response.text}
             
             data = response.json()
-            # Hinweis: Die genaue Struktur der API-Antwort musst du evtl. prüfen. 
-            # Wir gehen davon aus, dass 'fieldNotes' eine Liste ist.
-            items = data.get("fieldNotes", []) 
+            items = data.get("fieldNotes", [])
             
             saved_count = 0
             
             for item in items:
-                # Deduplizierung: Prüfen, ob wir dieses Issue schon haben
                 os_id = item.get("id")
                 existing = db.query(ImportedIssue).filter(ImportedIssue.openspace_id == os_id).first()
                 
                 if not existing:
-                    # Neu anlegen
                     new_issue = ImportedIssue(
                         openspace_id=os_id,
-                        project_id=item.get("projectId"), 
-                        title=item.get("description", "Kein Titel"), 
+                        project_id=str(item.get("projectId")),
+                        title=item.get("description", "Kein Titel"),
                         status=item.get("status"),
-                        image_url=None, # Hier müssten wir später die URL aus attachments parsen
+                        image_url=None, # Parsen wir später
                         raw_data=item
                     )
                     db.add(new_issue)
@@ -72,15 +116,15 @@ async def sync_openspace_data(project_id: str = None, db: Session = Depends(get_
             
             return {
                 "status": "success", 
-                "total_fetched": len(items), 
-                "newly_saved_in_db": saved_count
+                "total_found_in_api": len(items), 
+                "saved_to_db": saved_count,
+                "project_used": project_id
             }
             
         except Exception as e:
             return {"error": str(e)}
 
+# --- 5. DB Check ---
 @app.get("/db/check")
 def check_db_content(db: Session = Depends(get_db)):
-    # Kleiner Helfer, um zu sehen, was in der DB liegt
-    issues = db.query(ImportedIssue).limit(20).all()
-    return issues
+    return db.query(ImportedIssue).all()
