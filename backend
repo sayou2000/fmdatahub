@@ -1,0 +1,6 @@
+/backend
+    /app
+        __init__.py       (leer)
+        main.py           (Der Server)
+    requirements.txt      (Python-Pakete)
+    Dockerfile            (Bauplan für Coolify)
