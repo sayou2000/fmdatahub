@@ -21,7 +21,7 @@ async def test_openspace_connection():
 
     # 2. Wir bauen die Anfrage (Header)
     headers = {
-        "Authorization": f"Bearer {token}",
+        "api-key": f"Bearer {token}",
         "Accept": "application/json"
     }
     
