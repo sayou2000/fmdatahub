@@ -21,7 +21,7 @@ async def test_openspace_connection():
 
     # 2. Wir bauen die Anfrage (Header)
     headers = {
-        "api-key": f"Bearer {token}",
+        "api-key": token,
         "Accept": "application/json"
     }
     
@@ -30,9 +30,9 @@ async def test_openspace_connection():
     
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(url, headers=headers, timeout=10.0)
+            # Wir fragen testweise nur 1 Ergebnis ab (?page=1&limit=1), um die Antwort klein zu halten
+            response = await client.get(f"{url}?page=1&limit=1", headers=headers, timeout=10.0)
             
-            # Wir geben genau zurück, was OpenSpace uns sagt (zum Debuggen)
             return {
                 "http_status": response.status_code,
                 "data": response.json() if response.status_code == 200 else response.text
