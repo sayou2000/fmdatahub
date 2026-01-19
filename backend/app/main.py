@@ -26,7 +26,7 @@ async def test_openspace_connection():
     }
     
     # 3. Wir fragen die OpenSpace API (Beispiel-Endpunkt für Projekte)
-      url = "https://api.eu.openspace.ai/api/external/v1/reports/field-notes" 
+    url = "https://api.eu.openspace.ai/api/external/v1/reports/field-notes" 
     
     async with httpx.AsyncClient() as client:
         try:
